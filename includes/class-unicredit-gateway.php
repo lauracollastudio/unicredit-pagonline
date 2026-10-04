@@ -98,7 +98,6 @@ class WC_Gateway_Unicredit_PagOnline extends WC_Payment_Gateway
 			'test_wsdl'        => array(
 				'title'       => __('URL WSDL (test)', 'unicredit-pagonline'),
 				'type'        => 'text',
-				'description' => __('Il PDF del cliente riporta due domini diversi per lo staging (testapif.netsgroup.com / testpay.netswgroup.it nelle note del cliente, testeps.netswgroup.it negli esempi del documento). Confermare con la banca quello corretto prima di testare. Di norma è il server URL + "/PaymentInitGatewayPort?wsdl".', 'unicredit-pagonline'),
 				'default'     => '',
 				'placeholder' => 'https://.../UNI_CG_SERVICES/services/PaymentInitGatewayPort?wsdl',
 			),
