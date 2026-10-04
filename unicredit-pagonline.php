@@ -12,6 +12,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 define( 'UNICREDIT_PAGONLINE_DIR', plugin_dir_path( __FILE__ ) );
+define( 'UNICREDIT_PAGONLINE_MAIN_FILE', __FILE__ );
 
 add_action( 'plugins_loaded', 'unicredit_pagonline_bootstrap', 11 );
 function unicredit_pagonline_bootstrap() {
@@ -26,6 +27,27 @@ add_filter( 'woocommerce_payment_gateways', 'unicredit_pagonline_register_gatewa
 function unicredit_pagonline_register_gateway( $gateways ) {
 	$gateways[] = 'WC_Gateway_Unicredit_PagOnline';
 	return $gateways;
+}
+
+// Tell WooCommerce this gateway is compatible with the Cart & Checkout blocks,
+// and register it with them (separate from the classic WC_Payment_Gateway hook above).
+add_action( 'before_woocommerce_init', function () {
+	if ( class_exists( \Automattic\WooCommerce\Utilities\FeaturesUtil::class ) ) {
+		\Automattic\WooCommerce\Utilities\FeaturesUtil::declare_compatibility( 'cart_checkout_blocks', UNICREDIT_PAGONLINE_MAIN_FILE, true );
+	}
+} );
+
+add_action( 'woocommerce_blocks_payment_method_type_registration', 'unicredit_pagonline_register_blocks_support' );
+function unicredit_pagonline_register_blocks_support( $payment_method_registry ) {
+	if ( ! class_exists( 'WC_Payment_Gateway' ) ) {
+		return;
+	}
+	// Belt and braces: this hook's firing order relative to our own plugins_loaded
+	// bootstrap isn't guaranteed, so make sure the gateway class is loaded here too
+	// instead of silently skipping registration if it happens to run first.
+	unicredit_pagonline_bootstrap();
+	require_once UNICREDIT_PAGONLINE_DIR . 'includes/class-unicredit-blocks-support.php';
+	$payment_method_registry->register( new WC_Unicredit_PagOnline_Blocks_Support() );
 }
 
 add_filter( 'cron_schedules', 'unicredit_pagonline_cron_schedule' );

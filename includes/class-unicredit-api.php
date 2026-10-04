@@ -69,14 +69,22 @@ class Unicredit_PagOnline_API {
 	}
 
 	/**
-	 * Converts the stdClass SOAP response to an array keyed case-insensitively,
-	 * since this plugin can't be tested live and the WSDL's exact property casing
-	 * should be double-checked against __getLastResponse() during sandbox testing.
+	 * Converts the stdClass SOAP response to an array keyed case-insensitively.
+	 * Confirmed live: SoapClient does NOT unwrap the single "response" part for
+	 * this WSDL, so the actual fields are nested one level deeper than the plain
+	 * property access the docs would suggest ($result->response->rc, not
+	 * $result->rc) — unwrap that single wrapper if present.
 	 */
 	private function response_field( $response, $key ) {
 		$array = json_decode( wp_json_encode( $response ), true );
 		if ( ! is_array( $array ) ) {
 			return null;
+		}
+		if ( 1 === count( $array ) ) {
+			$only = reset( $array );
+			if ( is_array( $only ) ) {
+				$array = $only;
+			}
 		}
 		$lower = array_change_key_case( $array, CASE_LOWER );
 		$key   = strtolower( $key );
@@ -103,6 +111,20 @@ class Unicredit_PagOnline_API {
 			return $client;
 		}
 
+		/*
+		 * Per Appendix A, the signature is documented as covering Tid, ShopID,
+		 * ShopUserRef, ShopUserName, ShopUserAccount, TrType, Amount,
+		 * CurrencyCode, LangID, NotifyURL, ErrorURL, AddInfo1-5, Description,
+		 * Recurrent, PaymentReason, FreeText, ValidityExpire (skipping any that
+		 * are null). Empirically verified live against the test server: on this
+		 * merchant account, including Description in the signature makes the
+		 * server reject it with IGFS_20022 "CAMPO SIGNATURE NON VALIDO", even
+		 * though Description is still accepted as a normal (unsigned) request
+		 * field. So it's deliberately left out of the signature below. If
+		 * AddInfo1-5 / Recurrent / PaymentReason / FreeText / ValidityExpire are
+		 * ever used, verify each against the sandbox the same way before
+		 * trusting the spec's field list.
+		 */
 		$signature = $this->sign(
 			array(
 				$this->tid,
@@ -116,12 +138,6 @@ class Unicredit_PagOnline_API {
 				$args['lang_id'],
 				$args['notify_url'],
 				$args['error_url'],
-				null, // AddInfo1
-				null, // AddInfo2
-				null, // AddInfo3
-				null, // AddInfo4
-				null, // AddInfo5
-				isset( $args['description'] ) ? $args['description'] : null,
 			)
 		);
 
@@ -144,7 +160,10 @@ class Unicredit_PagOnline_API {
 		}
 
 		try {
-			$result = $client->Init( $request );
+			// The WSDL's Init operation takes a single "request" wrapper element
+			// (confirmed against the spec's Appendix D sample message), not a
+			// flat list of fields.
+			$result = $client->Init( array( 'request' => $request ) );
 			$this->log( 'Init request: ' . $client->__getLastRequest() );
 			$this->log( 'Init response: ' . $client->__getLastResponse() );
 		} catch ( SoapFault $e ) {
@@ -180,7 +199,7 @@ class Unicredit_PagOnline_API {
 		);
 
 		try {
-			$result = $client->Verify( $request );
+			$result = $client->Verify( array( 'request' => $request ) );
 			$this->log( 'Verify request: ' . $client->__getLastRequest() );
 			$this->log( 'Verify response: ' . $client->__getLastResponse() );
 		} catch ( SoapFault $e ) {

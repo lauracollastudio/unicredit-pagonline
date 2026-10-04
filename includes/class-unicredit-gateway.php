@@ -161,7 +161,10 @@ class WC_Gateway_Unicredit_PagOnline extends WC_Payment_Gateway {
 				'lang_id'       => $this->lang_id,
 				'notify_url'    => $return_url,
 				'error_url'     => $return_url,
-				'description'   => sprintf( 'Ordine #%s', $order->get_order_number() ),
+				// "#" was empirically confirmed to make UniCredit reject the whole
+				// request with IGFS_20044 (CAMPO PAYMENT DESCRIPTION NON VALIDO) —
+				// avoid special characters here, plain alphanumeric only.
+				'description'   => sprintf( 'Ordine n. %s', $order->get_order_number() ),
 			)
 		);
 
