@@ -231,7 +231,7 @@ class WC_Gateway_Unicredit_PagOnline extends WC_Payment_Gateway
 		if ($order->has_status(array('processing', 'completed', 'on-hold', 'pending'))) {
 			wp_safe_redirect($order->get_checkout_order_received_url());
 		} else {
-			wp_safe_redirect($order->wc_get_checkout_url());
+			wp_safe_redirect(wc_get_checkout_url());
 		}
 		exit;
 	}
