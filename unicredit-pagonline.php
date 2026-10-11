@@ -1,45 +1,50 @@
 <?php
+
 /**
  * Plugin Name: UniCredit PagOnline Imprese Gateway
  * Description: Custom WooCommerce payment gateway for UniCredit PagOnline Imprese (hosted payment page, SOAP init()/verify()).
  * Version: 1.0.0
+ * Author: Colla Studio
  * Text Domain: unicredit-pagonline
  * Requires Plugins: woocommerce
  */
 
-if ( ! defined( 'ABSPATH' ) ) {
+if (! defined('ABSPATH')) {
 	exit;
 }
 
-define( 'UNICREDIT_PAGONLINE_DIR', plugin_dir_path( __FILE__ ) );
-define( 'UNICREDIT_PAGONLINE_MAIN_FILE', __FILE__ );
+define('UNICREDIT_PAGONLINE_DIR', plugin_dir_path(__FILE__));
+define('UNICREDIT_PAGONLINE_MAIN_FILE', __FILE__);
 
-add_action( 'plugins_loaded', 'unicredit_pagonline_bootstrap', 11 );
-function unicredit_pagonline_bootstrap() {
-	if ( ! class_exists( 'WC_Payment_Gateway' ) ) {
+add_action('plugins_loaded', 'unicredit_pagonline_bootstrap', 11);
+function unicredit_pagonline_bootstrap()
+{
+	if (! class_exists('WC_Payment_Gateway')) {
 		return;
 	}
 	require_once UNICREDIT_PAGONLINE_DIR . 'includes/class-unicredit-api.php';
 	require_once UNICREDIT_PAGONLINE_DIR . 'includes/class-unicredit-gateway.php';
 }
 
-add_filter( 'woocommerce_payment_gateways', 'unicredit_pagonline_register_gateway' );
-function unicredit_pagonline_register_gateway( $gateways ) {
+add_filter('woocommerce_payment_gateways', 'unicredit_pagonline_register_gateway');
+function unicredit_pagonline_register_gateway($gateways)
+{
 	$gateways[] = 'WC_Gateway_Unicredit_PagOnline';
 	return $gateways;
 }
 
 // Tell WooCommerce this gateway is compatible with the Cart & Checkout blocks,
 // and register it with them (separate from the classic WC_Payment_Gateway hook above).
-add_action( 'before_woocommerce_init', function () {
-	if ( class_exists( \Automattic\WooCommerce\Utilities\FeaturesUtil::class ) ) {
-		\Automattic\WooCommerce\Utilities\FeaturesUtil::declare_compatibility( 'cart_checkout_blocks', UNICREDIT_PAGONLINE_MAIN_FILE, true );
+add_action('before_woocommerce_init', function () {
+	if (class_exists(\Automattic\WooCommerce\Utilities\FeaturesUtil::class)) {
+		\Automattic\WooCommerce\Utilities\FeaturesUtil::declare_compatibility('cart_checkout_blocks', UNICREDIT_PAGONLINE_MAIN_FILE, true);
 	}
-} );
+});
 
-add_action( 'woocommerce_blocks_payment_method_type_registration', 'unicredit_pagonline_register_blocks_support' );
-function unicredit_pagonline_register_blocks_support( $payment_method_registry ) {
-	if ( ! class_exists( 'WC_Payment_Gateway' ) ) {
+add_action('woocommerce_blocks_payment_method_type_registration', 'unicredit_pagonline_register_blocks_support');
+function unicredit_pagonline_register_blocks_support($payment_method_registry)
+{
+	if (! class_exists('WC_Payment_Gateway')) {
 		return;
 	}
 	// Belt and braces: this hook's firing order relative to our own plugins_loaded
@@ -47,26 +52,29 @@ function unicredit_pagonline_register_blocks_support( $payment_method_registry )
 	// instead of silently skipping registration if it happens to run first.
 	unicredit_pagonline_bootstrap();
 	require_once UNICREDIT_PAGONLINE_DIR . 'includes/class-unicredit-blocks-support.php';
-	$payment_method_registry->register( new WC_Unicredit_PagOnline_Blocks_Support() );
+	$payment_method_registry->register(new WC_Unicredit_PagOnline_Blocks_Support());
 }
 
-add_filter( 'cron_schedules', 'unicredit_pagonline_cron_schedule' );
-function unicredit_pagonline_cron_schedule( $schedules ) {
+add_filter('cron_schedules', 'unicredit_pagonline_cron_schedule');
+function unicredit_pagonline_cron_schedule($schedules)
+{
 	$schedules['unicredit_fifteen_minutes'] = array(
 		'interval' => 15 * MINUTE_IN_SECONDS,
-		'display'  => __( 'Every 15 Minutes', 'unicredit-pagonline' ),
+		'display'  => __('Every 15 Minutes', 'unicredit-pagonline'),
 	);
 	return $schedules;
 }
 
-register_activation_hook( __FILE__, 'unicredit_pagonline_activate' );
-function unicredit_pagonline_activate() {
-	if ( ! wp_next_scheduled( 'unicredit_pagonline_check_pending' ) ) {
-		wp_schedule_event( time() + 900, 'unicredit_fifteen_minutes', 'unicredit_pagonline_check_pending' );
+register_activation_hook(__FILE__, 'unicredit_pagonline_activate');
+function unicredit_pagonline_activate()
+{
+	if (! wp_next_scheduled('unicredit_pagonline_check_pending')) {
+		wp_schedule_event(time() + 900, 'unicredit_fifteen_minutes', 'unicredit_pagonline_check_pending');
 	}
 }
 
-register_deactivation_hook( __FILE__, 'unicredit_pagonline_deactivate' );
-function unicredit_pagonline_deactivate() {
-	wp_clear_scheduled_hook( 'unicredit_pagonline_check_pending' );
+register_deactivation_hook(__FILE__, 'unicredit_pagonline_deactivate');
+function unicredit_pagonline_deactivate()
+{
+	wp_clear_scheduled_hook('unicredit_pagonline_check_pending');
 }
