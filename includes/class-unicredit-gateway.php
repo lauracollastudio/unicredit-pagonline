@@ -30,8 +30,16 @@ class WC_Gateway_Unicredit_PagOnline extends WC_Payment_Gateway
 		$this->ksig     = $this->testmode ? $this->get_option('test_ksig') : $this->get_option('live_ksig');
 		$this->wsdl_url = $this->testmode ? $this->get_option('test_wsdl') : $this->get_option('live_wsdl');
 
+		$this->enable_bacs_link = 'yes' === $this->get_option('enable_bacs_link');
+
 		add_action('woocommerce_update_options_payment_gateways_' . $this->id, array($this, 'process_admin_options'));
 		add_action('woocommerce_api_unicredit_pagonline', array($this, 'handle_return'));
+
+		// Optional: generate a UniCredit pay-by-link for orders placed with
+		// WooCommerce's own core "Direct Bank Transfer" (BACS) gateway, and email
+		// it alongside the bank details, as a faster alternative to the wire.
+		add_action('woocommerce_order_status_on-hold', array($this, 'maybe_create_bacs_pay_by_link'), 10, 2);
+		add_action('woocommerce_email_before_order_table', array($this, 'add_pay_by_link_to_email'), 20, 4);
 	}
 
 	public function init_form_fields()
@@ -72,6 +80,13 @@ class WC_Gateway_Unicredit_PagOnline extends WC_Payment_Gateway
 					'EN' => 'English',
 				),
 				'default' => 'IT',
+			),
+			'enable_bacs_link' => array(
+				'title'       => __('Link di pagamento su Bonifico Bancario', 'unicredit-pagonline'),
+				'type'        => 'checkbox',
+				'label'       => __('Includi un link di pagamento UniCredit nell\'email di Bonifico Bancario (BACS)', 'unicredit-pagonline'),
+				'description' => __('Quando un ordine viene pagato con il Bonifico Bancario nativo di WooCommerce, genera (con le stesse credenziali di questa pagina) un link di pagamento UniCredit e lo aggiunge, oltre ai dati bancari, nell\'email "In attesa del pagamento". Se il cliente lo usa, l\'ordine passa automaticamente a pagato.', 'unicredit-pagonline'),
+				'default'     => 'no',
 			),
 			'testmode'         => array(
 				'title'   => __('Modalità test', 'unicredit-pagonline'),
@@ -237,13 +252,132 @@ class WC_Gateway_Unicredit_PagOnline extends WC_Payment_Gateway
 	}
 
 	/**
+	 * Fired on woocommerce_order_status_on-hold. Generates a UniCredit pay-by-link
+	 * for orders placed with WooCommerce's own core BACS (bank transfer) gateway,
+	 * so it can be emailed alongside the bank details by add_pay_by_link_to_email().
+	 * Idempotent: does nothing if a link already exists for the order.
+	 */
+	public function maybe_create_bacs_pay_by_link($order_id, $order = null)
+	{
+		if (! $this->enable_bacs_link || empty($this->tid) || empty($this->ksig) || empty($this->wsdl_url)) {
+			return;
+		}
+
+		// Use the order instance WooCommerce handed us, not a fresh wc_get_order()
+		// lookup: wc_get_order() constructs a brand new object from the DB rather
+		// than reusing the one already in play for this request (confirmed live —
+		// WC_Order_Factory::get_order() only caches WC_Abstract_Legacy_Order
+		// instances, not HPOS WC_Order objects). A separate copy would still
+		// successfully persist our meta to the DB, but the *original* order object
+		// that the rest of this request (including the email about to be sent)
+		// keeps using would never see it in its own in-memory meta cache — the
+		// link would exist in the DB but silently never appear in the email.
+		if (! $order instanceof WC_Order) {
+			$order = wc_get_order($order_id);
+		}
+		if (! $order || 'bacs' !== $order->get_payment_method()) {
+			return;
+		}
+
+		if ($order->get_meta('_unicredit_shop_id')) {
+			return;
+		}
+
+		$shop_id = $order->get_id() . '-bacs-' . time();
+		$amount  = (int) round($order->get_total() * 100);
+
+		$notify_url = add_query_arg(
+			array(
+				'order_id' => $order->get_id(),
+				'key'      => $order->get_order_key(),
+			),
+			WC()->api_request_url('unicredit_pagonline')
+		);
+
+		$response = $this->api()->init(
+			array(
+				'shop_id'       => $shop_id,
+				'shop_user_ref' => $order->get_billing_email(),
+				'tr_type'       => $this->transaction_type,
+				'amount'        => $amount,
+				'currency_code' => 'EUR',
+				'lang_id'       => $this->lang_id,
+				'notify_url'    => $notify_url,
+				'error_url'     => $notify_url,
+				'description'   => sprintf('Ordine n. %s', $order->get_order_number()),
+			)
+		);
+
+		if (is_wp_error($response) || ! empty($response['error']) || empty($response['redirect_url'])) {
+			$order->add_order_note(
+				'UniCredit pay-by-link (BACS) init() failed: ' . (is_wp_error($response)
+					? $response->get_error_message()
+					: $response['rc'] . ' - ' . $response['error_desc'])
+			);
+			return;
+		}
+
+		$order->update_meta_data('_unicredit_shop_id', $shop_id);
+		$order->update_meta_data('_unicredit_payment_id', $response['payment_id']);
+		$order->update_meta_data('_unicredit_redirect_url', $response['redirect_url']);
+		$order->save();
+	}
+
+	/**
+	 * Fired on woocommerce_email_before_order_table. Appends the pay-by-link
+	 * (generated above) under the bank details already printed by WooCommerce's
+	 * core BACS gateway, on the "order on-hold" / invoice emails, while the link
+	 * is still unpaid.
+	 */
+	public function add_pay_by_link_to_email($order, $sent_to_admin, $plain_text, $email)
+	{
+		if ($sent_to_admin || ! $this->enable_bacs_link || ! $order instanceof WC_Order) {
+			return;
+		}
+		if ('bacs' !== $order->get_payment_method()) {
+			return;
+		}
+		if (! isset($email->id) || ! in_array($email->id, array('customer_on_hold_order', 'customer_invoice'), true)) {
+			return;
+		}
+
+		$redirect_url = $order->get_meta('_unicredit_redirect_url');
+		if (empty($redirect_url) || 'yes' === $order->get_meta('_unicredit_verify_done')) {
+			return;
+		}
+
+		if ($plain_text) {
+			echo "\n\n" . esc_html__('Preferisci pagare subito online invece di fare il bonifico?', 'unicredit-pagonline') . "\n" . esc_url($redirect_url) . "\n\n"; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped
+			return;
+		}
+
+		echo '<p>' . esc_html__('Preferisci pagare subito online invece di fare il bonifico?', 'unicredit-pagonline') . '</p>';
+		echo '<p><a href="' . esc_url($redirect_url) . '" style="display:inline-block;padding:10px 18px;background:#e2001a;color:#ffffff;text-decoration:none;border-radius:4px;">' . esc_html__('Paga ora', 'unicredit-pagonline') . '</a></p>';
+	}
+
+	/**
 	 * Calls verify() and updates the order accordingly. Safe to call repeatedly
 	 * (from the return URL and from the cron fallback) since it's a no-op once
 	 * the order has reached a final state.
+	 *
+	 * '_unicredit_verify_done' (set once a final rc is reached, below) is what
+	 * actually tracks "is this resolved", rather than the order status alone:
+	 * for this gateway's own checkout flow, 'on-hold'/'failed' are themselves
+	 * final states (AUTH pre-auth / a previous failed verify), but for a
+	 * pay-by-link emailed on a BACS order, 'on-hold' is BACS's own *starting*
+	 * state, so it must not short-circuit verification here.
 	 */
 	public function check_order_status(WC_Order $order)
 	{
-		if ($order->has_status(array('processing', 'completed', 'on-hold', 'cancelled', 'failed', 'refunded'))) {
+		if ('yes' === $order->get_meta('_unicredit_verify_done')) {
+			return;
+		}
+
+		if ($order->has_status(array('processing', 'completed', 'cancelled', 'refunded'))) {
+			return;
+		}
+
+		if ('unicredit_pagonline' === $order->get_payment_method() && $order->has_status(array('on-hold', 'failed'))) {
 			return;
 		}
 
@@ -266,6 +400,7 @@ class WC_Gateway_Unicredit_PagOnline extends WC_Payment_Gateway
 			$order->update_meta_data('_unicredit_tran_id', $response['tran_id']);
 			$order->update_meta_data('_unicredit_auth_code', $response['auth_code']);
 			$order->update_meta_data('_unicredit_brand', $response['brand']);
+			$order->update_meta_data('_unicredit_verify_done', 'yes');
 			$order->save();
 
 			if ('AUTH' === $this->transaction_type) {
@@ -301,10 +436,14 @@ class WC_Gateway_Unicredit_PagOnline extends WC_Payment_Gateway
 		}
 
 		if ('IGFS_20090' === $rc) {
+			$order->update_meta_data('_unicredit_verify_done', 'yes');
+			$order->save();
 			$order->update_status('cancelled', __('Pagamento annullato dal cliente su UniCredit PagOnline.', 'unicredit-pagonline'));
 			return;
 		}
 
+		$order->update_meta_data('_unicredit_verify_done', 'yes');
+		$order->save();
 		$order->update_status(
 			'failed',
 			sprintf('UniCredit verify() rc=%s: %s', $rc, $response['error_desc'])
@@ -315,7 +454,7 @@ class WC_Gateway_Unicredit_PagOnline extends WC_Payment_Gateway
 add_action('unicredit_pagonline_check_pending', 'unicredit_pagonline_check_pending_orders');
 function unicredit_pagonline_check_pending_orders()
 {
-	$orders = wc_get_orders(
+	$direct_checkout_orders = wc_get_orders(
 		array(
 			'status'         => 'pending',
 			'payment_method' => 'unicredit_pagonline',
@@ -324,6 +463,23 @@ function unicredit_pagonline_check_pending_orders()
 		)
 	);
 
+	// BACS orders carrying an emailed UniCredit pay-by-link stay 'on-hold' the
+	// whole time (that's BACS's own default status), rather than 'pending', so
+	// they need a separate query; check_order_status() itself is what actually
+	// skips ones already resolved via '_unicredit_verify_done'.
+	$bacs_link_orders = wc_get_orders(
+		array(
+			'status'         => 'on-hold',
+			'payment_method' => 'bacs',
+			'date_created'   => '<' . (time() - 10 * MINUTE_IN_SECONDS),
+			'limit'          => 50,
+			'meta_query'     => array(
+				array('key' => '_unicredit_shop_id', 'compare' => 'EXISTS'),
+			),
+		)
+	);
+
+	$orders = array_merge($direct_checkout_orders, $bacs_link_orders);
 	if (empty($orders)) {
 		return;
 	}
