@@ -30,6 +30,14 @@ class WC_Gateway_Unicredit_PagOnline extends WC_Payment_Gateway
 		$this->ksig     = $this->testmode ? $this->get_option('test_ksig') : $this->get_option('live_ksig');
 		$this->wsdl_url = $this->testmode ? $this->get_option('test_wsdl') : $this->get_option('live_wsdl');
 
+		// In production, pay-by-link can run on its own terminal. Test mode, or an
+		// empty field, falls back to the main credentials above.
+		$live_link_tid   = $this->get_option('live_link_tid');
+		$use_link_tid    = ! $this->testmode && ! empty($live_link_tid);
+		$live_link_ksig  = $this->get_option('live_link_ksig');
+		$this->link_tid  = $use_link_tid ? $live_link_tid : $this->tid;
+		$this->link_ksig = $use_link_tid && ! empty($live_link_ksig) ? $live_link_ksig : $this->ksig;
+
 		$this->enable_bacs_link = 'yes' === $this->get_option('enable_bacs_link');
 
 		add_action('woocommerce_update_options_payment_gateways_' . $this->id, array($this, 'process_admin_options'));
@@ -85,7 +93,7 @@ class WC_Gateway_Unicredit_PagOnline extends WC_Payment_Gateway
 				'title'       => __('Link di pagamento su Bonifico Bancario', 'unicredit-pagonline'),
 				'type'        => 'checkbox',
 				'label'       => __('Includi un link di pagamento UniCredit nell\'email di Bonifico Bancario (BACS)', 'unicredit-pagonline'),
-				'description' => __('Quando un ordine viene pagato con il Bonifico Bancario nativo di WooCommerce, genera (con le stesse credenziali di questa pagina) un link di pagamento UniCredit e lo aggiunge, oltre ai dati bancari, nell\'email "In attesa del pagamento". Se il cliente lo usa, l\'ordine passa automaticamente a pagato.', 'unicredit-pagonline'),
+				'description' => __('Quando un ordine viene pagato con il Bonifico Bancario nativo di WooCommerce, genera un link di pagamento UniCredit e lo aggiunge, oltre ai dati bancari, nell\'email "In attesa del pagamento". Se il cliente lo usa, l\'ordine passa automaticamente a pagato.', 'unicredit-pagonline'),
 				'default'     => 'no',
 			),
 			'testmode'         => array(
@@ -131,6 +139,18 @@ class WC_Gateway_Unicredit_PagOnline extends WC_Payment_Gateway
 				'type'    => 'text',
 				'default' => '',
 			),
+			'live_link_tid'    => array(
+				'title'       => __('Terminal ID link di pagamento (produzione)', 'unicredit-pagonline'),
+				'type'        => 'text',
+				'description' => __('Terminal usato solo per i link di pagamento inviati via email. Lascia vuoto per usare il Terminal ID di produzione qui sopra.', 'unicredit-pagonline'),
+				'default'     => '',
+			),
+			'live_link_ksig'   => array(
+				'title'       => __('API key / kSig link di pagamento (produzione)', 'unicredit-pagonline'),
+				'type'        => 'password',
+				'description' => __('Compila solo se il terminal dei link di pagamento ha una API key diversa. Lascia vuoto per usare la API key di produzione qui sopra.', 'unicredit-pagonline'),
+				'default'     => '',
+			),
 		);
 	}
 
@@ -151,6 +171,11 @@ class WC_Gateway_Unicredit_PagOnline extends WC_Payment_Gateway
 	private function api()
 	{
 		return new Unicredit_PagOnline_API($this->wsdl_url, $this->tid, $this->ksig, $this->debug);
+	}
+
+	private function link_api()
+	{
+		return new Unicredit_PagOnline_API($this->wsdl_url, $this->link_tid, $this->link_ksig, $this->debug);
 	}
 
 	public function process_payment($order_id)
@@ -294,7 +319,7 @@ class WC_Gateway_Unicredit_PagOnline extends WC_Payment_Gateway
 			WC()->api_request_url('unicredit_pagonline')
 		);
 
-		$response = $this->api()->init(
+		$response = $this->link_api()->init(
 			array(
 				'shop_id'       => $shop_id,
 				'shop_user_ref' => $order->get_billing_email(),
@@ -320,6 +345,7 @@ class WC_Gateway_Unicredit_PagOnline extends WC_Payment_Gateway
 		$order->update_meta_data('_unicredit_shop_id', $shop_id);
 		$order->update_meta_data('_unicredit_payment_id', $response['payment_id']);
 		$order->update_meta_data('_unicredit_redirect_url', $response['redirect_url']);
+		$order->update_meta_data('_unicredit_link_tid', $this->link_tid);
 		$order->save();
 	}
 
@@ -387,7 +413,11 @@ class WC_Gateway_Unicredit_PagOnline extends WC_Payment_Gateway
 			return;
 		}
 
-		$response = $this->api()->verify($shop_id, $payment_id);
+		// A payment can only be verified on the terminal that created it. Links
+		// created before the separate terminal existed have no '_unicredit_link_tid',
+		// so they correctly stay on the main terminal.
+		$api      = $this->link_tid === $order->get_meta('_unicredit_link_tid') ? $this->link_api() : $this->api();
+		$response = $api->verify($shop_id, $payment_id);
 
 		if (is_wp_error($response)) {
 			$order->add_order_note('UniCredit verify() error: ' . $response->get_error_message());
