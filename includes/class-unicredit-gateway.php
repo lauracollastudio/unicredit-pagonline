@@ -378,7 +378,7 @@ class WC_Gateway_Unicredit_PagOnline extends WC_Payment_Gateway
 		}
 
 		echo '<p>' . esc_html__('Preferisci pagare subito online invece di fare il bonifico?', 'unicredit-pagonline') . '</p>';
-		echo '<p><a href="' . esc_url($redirect_url) . '" style="display:inline-block;padding:10px 18px;background:#e2001a;color:#ffffff;text-decoration:none;border-radius:4px;">' . esc_html__('Paga ora', 'unicredit-pagonline') . '</a></p>';
+		echo '<p><a href="' . esc_url($redirect_url) . '" style="display:inline-block;padding:10px 18px;background:#141F25;color:#FCF7EB;text-decoration:none;border-radius:99px;margin-top: 20px;">' . esc_html__('Paga ora', 'unicredit-pagonline') . '</a></p>';
 	}
 
 	/**
