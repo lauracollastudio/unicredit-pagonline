@@ -211,6 +211,11 @@ abstract class WC_Gateway_Unicredit_PagOnline_Base extends WC_Payment_Gateway
 
 		$order->update_meta_data('_unicredit_shop_id', $shop_id);
 		$order->update_meta_data('_unicredit_payment_id', $response['payment_id']);
+		// Clear any stale verify() result from a previous failed/abandoned attempt
+		// on this same order, otherwise check_order_status()'s idempotency guard
+		// (meant to stop a finished order being re-verified) would also block
+		// this fresh attempt from ever being verified once it completes.
+		$order->delete_meta_data('_unicredit_verify_done');
 		$order->update_status('pending', __('In attesa del pagamento UniCredit PagOnline.', 'unicredit-pagonline'));
 		$order->save();
 
