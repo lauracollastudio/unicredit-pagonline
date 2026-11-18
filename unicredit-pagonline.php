@@ -23,13 +23,16 @@ function unicredit_pagonline_bootstrap()
 		return;
 	}
 	require_once UNICREDIT_PAGONLINE_DIR . 'includes/class-unicredit-api.php';
+	require_once UNICREDIT_PAGONLINE_DIR . 'includes/class-unicredit-gateway-base.php';
 	require_once UNICREDIT_PAGONLINE_DIR . 'includes/class-unicredit-gateway.php';
+	require_once UNICREDIT_PAGONLINE_DIR . 'includes/class-unicredit-gateway-link.php';
 }
 
 add_filter('woocommerce_payment_gateways', 'unicredit_pagonline_register_gateway');
 function unicredit_pagonline_register_gateway($gateways)
 {
 	$gateways[] = 'WC_Gateway_Unicredit_PagOnline';
+	$gateways[] = 'WC_Gateway_Unicredit_PagOnline_Link';
 	return $gateways;
 }
 
@@ -52,7 +55,8 @@ function unicredit_pagonline_register_blocks_support($payment_method_registry)
 	// instead of silently skipping registration if it happens to run first.
 	unicredit_pagonline_bootstrap();
 	require_once UNICREDIT_PAGONLINE_DIR . 'includes/class-unicredit-blocks-support.php';
-	$payment_method_registry->register(new WC_Unicredit_PagOnline_Blocks_Support());
+	$payment_method_registry->register(new WC_Unicredit_PagOnline_Blocks_Support('unicredit_pagonline', 'blocks.js'));
+	$payment_method_registry->register(new WC_Unicredit_PagOnline_Blocks_Support('unicredit_pagonline_link', 'blocks-link.js'));
 }
 
 add_filter('cron_schedules', 'unicredit_pagonline_cron_schedule');
